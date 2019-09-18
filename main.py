@@ -1,5 +1,5 @@
 
-
+from go import *
 import tensorflow as tf
 import random
 import sys
@@ -22,9 +22,8 @@ class State():
 
     def get_policy_through_net(self):
         input_array = trans_recent_to_array(self.board.recent, False)
-        #print(input_array)
-        #p, v = pred_p_v(input_array)
-        return pred_p_v(input_array)#p
+        p = pred_p_v(input_array)
+        return p
 
 
 class Node():
@@ -47,8 +46,6 @@ class Node():
         child.set_parent(self)
 
 def pred_p_v(XX):
-    #print(XX)
-    #print(XX.shape)
     with tf.Session() as sess:
         init = tf.global_variables_initializer()
         sess.run(init)
@@ -56,8 +53,7 @@ def pred_p_v(XX):
         #saver = tf.train.import_meta_graph('my_test_model.meta')
         #saver.restore(sess,tf.train.latest_checkpoint('./'))
         p = sess.run(pred_p, feed_dict={X:XX, is_training:False})
-        #v = sess.run(pred_v, feed_dict={X:XX, is_training:False})
-        return  p#, v
+        return  p
 
 def trans_recent_to_array(recent, is_training):
 
@@ -66,14 +62,14 @@ def trans_recent_to_array(recent, is_training):
     
     now_board = Position(board=None, n=0, komi=1, caps=(0, 0), lib_tracker=None, ko=None, recent=tuple(), to_play=BLACK)
     add_one_game = []
-    for i in range(-8,len(recent)-8):
+    last = -8 if is_training == 1 else len(recent)-9
+    for i in range(last,len(recent)-8):
         now_board = Position(board=None, n=0, komi=1, caps=(0, 0), lib_tracker=None, ko=None, recent=tuple(), to_play=BLACK) if i<0 else now_board.play_move(c=recent[i].move, color=recent[i].color)
         sub_board = now_board
         add = now_board.board
         for j in range(1,8):
             if i+j>=0:
                 sub_board = sub_board.play_move(c=recent[i+j].move, color=recent[i+j].color)
-                #print(add.shape)
             add = np.dstack((add, sub_board.board))
 
         add = np.dstack((add, np.ones(now_board.board.shape)*recent[i+8].color))
@@ -81,7 +77,6 @@ def trans_recent_to_array(recent, is_training):
             add_one_game = add[np.newaxis,:]
         else:
             add_one_game = np.vstack((add_one_game, add[np.newaxis,:]))
-    #print(add_one_game.shape)
     return add_one_game
 
 def tree_policy(node):
@@ -100,20 +95,6 @@ def default_policy(node):
     final_state_reward = current_state.board.win_or_lose() * current_state.board.to_play
     return final_state_reward
 
-def get_move(array):
-    array = array / np.sum(array)
-    #print(array)
-    array = np.reshape(array, [board_size, board_size])
-    p = np.random.random()
-    all_p = 0.0
-    for i in range(board_size):
-        for j in range(board_size):
-            if array[i][j]>1e-7:
-                all_p += array[i][j]
-                if all_p > p:
-                    return (i,j)
-    return (board_size-1, board_size-1)
-
 def expand(node):
 
     tried_sub_node_moves = [sub_node.state.board.recent[-1].move for sub_node in node.children]
@@ -122,30 +103,20 @@ def expand(node):
     probability = probability / np.max(probability)
     probability = np.power(probability, 1/tempreture)
     probability = probability * 0.75 + 0.25 * np.random.randn(board_size * board_size)
-    #print(probability)
-    #print(probability.shape)
+
     for i in range(board_size):
         for j in range(board_size):
-            if ((i,j) in node.state.all_choices == False) or probability[i * board_size + j]<0:
+            if ((i,j)  not in node.state.all_choices) or probability[i * board_size + j]<0:
                 probability[i*board_size + j] = 0
     probability = probability / np.sum(probability)
     move_ = np.random.choice(board_size * board_size, 1, p=probability)
     move = (move_[0] //  board_size, move_[0] %  board_size)
-    tries = 0
-    while (move in node.state.all_choices == False) and tries<= board_size * board_size:
-        tries += 1
-        move_ = np.random.choice(board_size * board_size, 1, p=probability)
-        move = (move_[0] //  board_size, move_[0] %  board_size)
-    #while move in node.state.all_choices == False:
-    #    move = get_move(probability)
+
     if move in tried_sub_node_moves:
         for sub_node in node.children:
             if sub_node.state.board.recent[-1].move == move:
                 return sub_node
     else:
-        #print(node.state.board)
-        #print(move)
-        #print(node.state.all_choices)
         board_copy = copy.deepcopy(node.state.board)
         new_position = board_copy.play_move(move)
         new_state = State(new_position)
@@ -181,8 +152,8 @@ def backup(node, reward):
         node = node.parent
 
 def monte_carlo_tree_search(node):
-    print('monte_carlo_tree_search')
-    computation_budget = 200
+    #print('monte_carlo_tree_search')
+    computation_budget = 100
     for i in range(computation_budget):
         expand_node = tree_policy(node)
         reward = default_policy(expand_node)
@@ -195,7 +166,7 @@ def monte_carlo_tree_search(node):
 
 def self_play():
     current_node = initial_node
-    for i in range(200):
+    for i in range(1000):
         print("Play round: {}".format(i + 1))
         current_node = monte_carlo_tree_search(current_node)
         if len(current_node.state.all_choices) == 0 or current_node.state.board.n <= i:
@@ -208,15 +179,13 @@ def trans_recent_to_policy(recent):
     add_one_game_policy = []
     for i in range(len(recent)):
         add = np.zeros((board_size, board_size))
-        #print(add)
         bo = 1
         for child in now_node.children:
             if child.state.board.recent[-1].move == recent[i].move and bo:
                 next_node = child
                 bo = 0
             add[child.state.board.recent[-1].move[0]][child.state.board.recent[-1].move[1]] =  child.visit_times
-            #child.quality_value/child.visit_times if child.visit_times>0 else 0
-        #print(add)
+
         add = add / np.sum(add)
         if add_one_game_policy == []:
             add_one_game_policy = add[np.newaxis,:]
@@ -275,7 +244,7 @@ def network(X, _weights, _biases, is_training):
     f0 = tf.nn.relu(b0)
     f0 = tf.cast(f0, dtype= 'float64')
 
-    for i in range(5):
+    for i in range(1):
         f1 = residual_block(f0,  _weights, _biases, is_training, i, X_residual)
 
     ap = tf.nn.conv2d(f1, _weights['Wp'], strides=[1,1,1,1], padding='SAME') + _biases['bp']
@@ -320,9 +289,6 @@ def net_update(X_train, z_train, policy_train):
             X_batch = X_train[mask,:,:,:]
             y_batch = z_train[mask]
             y_p_batch = policy_train[mask,:]
-            #print(X_batch.shape)
-            #print(y_batch.shape)
-            #print(y_p_batch.shape)
             sess.run(optimizer, feed_dict={X: X_batch, y_v: y_batch, y_p:y_p_batch, is_training:True})
 
             if step % display_step == 0:
@@ -341,29 +307,33 @@ def play(node, complete_or_fast):
 
     if complete_or_fast:
 
-        node = monte_carlo_tree_search(current_node)
+        node = monte_carlo_tree_search(node)
 
     else:
 
         tried_sub_node_moves = [sub_node.state.board.recent[-1].move for sub_node in node.children]
         probability = node.state.get_policy_through_net()
+        probability = np.reshape(probability, [board_size * board_size])
         probability = probability / np.max(probability)
         probability = np.power(probability, 1/tempreture)
+        probability = probability * 0.75 + 0.25 * np.random.randn(board_size * board_size)
+
         for i in range(board_size):
             for j in range(board_size):
-                if (i,j) in node.state.all_choices == False:
-                    probability[i][j] = 0
-                    
-        move = get_move(probability)
+                if ((i,j)  not in node.state.all_choices) or probability[i * board_size + j]<0:
+                    probability[i*board_size + j] = 0
+        probability = probability / np.sum(probability)
+        move_ = np.random.choice(board_size * board_size, 1, p=probability)
+        move = (move_[0] //  board_size, move_[0] %  board_size)
+
         if move in tried_sub_node_moves:
             for sub_node in node.children:
                 if sub_node.state.board.recent[-1].move == move:
                     node = sub_node
-                    break
         else:
-            new_board = node.state.board
-            new_board.play_move(move)
-            new_state = State(new_board)
+            board_copy = copy.deepcopy(node.state.board)
+            new_position = board_copy.play_move(move)
+            new_state = State(new_position)
             sub_node = Node(state = new_state)
             node.add_child(sub_node)
             node = sub_node
@@ -410,7 +380,7 @@ def play_initial(complete_or_fast):
 
 if __name__ == "__main__":
 
-    board_size = 11
+    board_size = 9
     set_board_size(board_size)
     tempreture = 1
     #------------tensorflow network--------------
@@ -459,9 +429,7 @@ if __name__ == "__main__":
     is_training = tf.placeholder(tf.bool)
 
     pred_p, pred_v= network(X, weights, biases, is_training)
-    #print(pred_p)
     loss = -tf.reduce_mean(tf.multiply(y_p, tf.log(pred_p))) + tf.reduce_mean(tf.square(y_v - pred_v))
-    #print(loss)
     optimizer = tf.train.AdamOptimizer(learning_rate=1e-4).minimize(loss)
 
     ones = tf.ones_like(pred_v)
@@ -477,7 +445,7 @@ if __name__ == "__main__":
     for times in range(1):
         recent, w_or_l = self_play()
         if w_or_l != 0:
-            add_one_game = trans_recent_to_array(recent, True, board_size)
+            add_one_game = trans_recent_to_array(recent, True)
             z = []
             for i in range(-8,len(recent)-8):
                 z.append(w_or_l * recent[i+8].color)
@@ -486,9 +454,9 @@ if __name__ == "__main__":
             rotate(add_one_game, z, add_one_game_policy)
             add_one_game, z, add_one_game_policy = reflect(add_one_game, z, add_one_game_policy)
             rotate(add_one_game, z, add_one_game_policy)
-            #net_update(add_one_game, z, add_one_game_policy)
-    print('Well Done!')
 
+    print('Well Done!')
+    #--------------play against computer-----------------
     '''print('Start Play:')
     complete_or_fast = input('complete(0)_or_fast(1):')
     play(initial_node, complete_or_fast)'''
